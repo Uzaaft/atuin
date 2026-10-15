@@ -70,6 +70,42 @@ chown 1000:1000 config
 docker compose up -d
 ```
 
+### Keeping the password in a secret
+
+To keep the password out of the environment, put it in a file and hand it to
+both containers as a [Docker secret](https://docs.docker.com/compose/how-tos/use-secrets/).
+Atuin reads it from `ATUIN_DB_PASSWORD_FILE`, and Postgres from
+`POSTGRES_PASSWORD_FILE`:
+
+```yaml
+services:
+  atuin:
+    # ...
+    environment:
+      ATUIN_HOST: "0.0.0.0"
+      ATUIN_OPEN_REGISTRATION: "true"
+      ATUIN_DB_URI: postgres://atuin@db/atuin
+      ATUIN_DB_PASSWORD_FILE: /run/secrets/atuin_db_password
+    secrets:
+      - atuin_db_password
+  db:
+    # ...
+    environment:
+      POSTGRES_USER: atuin
+      POSTGRES_PASSWORD_FILE: /run/secrets/atuin_db_password
+      POSTGRES_DB: atuin
+    secrets:
+      - atuin_db_password
+
+secrets:
+  atuin_db_password:
+    file: ./db_password.txt
+```
+
+The password in `db_password.txt` isn't part of a URI, so it can contain any
+characters. Compose mounts the file with its own permissions, and neither
+container reads it as root, so make sure both can read it.
+
 ## Using systemd to manage your Atuin server
 
 The following `systemd` unit file can be used to manage your `docker-compose` managed service:

@@ -227,6 +227,29 @@ Note that this configuration will store the database folder _outside_ the Kubern
 
 You should also change the password string in `ATUIN_DB_PASSWORD` and `ATUIN_DB_URI` in the`secrets.yaml` file to a more secure one.
 
+### Keeping the password in a secret
+
+Instead of repeating the password in `ATUIN_DB_URI`, Atuin can read it from the `ATUIN_DB_PASSWORD` key of the secret, mounted as a file. Drop the password from `ATUIN_DB_URI` and point `ATUIN_DB_PASSWORD_FILE` at the mounted key in the `atuin` container:
+
+```yaml
+          env:
+            - name: ATUIN_DB_URI
+              value: postgres://atuin@postgres/atuin
+            - name: ATUIN_DB_PASSWORD_FILE
+              value: /run/secrets/atuin/ATUIN_DB_PASSWORD
+          volumeMounts:
+            - mountPath: /run/secrets/atuin
+              name: atuin-secrets
+              readOnly: true
+      volumes:
+        - name: atuin-secrets
+          secret:
+            secretName: atuin-secrets
+            items:
+              - key: ATUIN_DB_PASSWORD
+                path: ATUIN_DB_PASSWORD
+```
+
 The Atuin service is exposed on port `30530` of the host system. That's configured by the `nodePort` property. Kubernetes has a strict rule that you aren't allowed to expose a port numbered lower than 30000. To make the clients work, set the port in your `config.toml` file, for example `sync_address = "http://192.168.1.10:30530"`.
 
 Deploy the Atuin server using `kubectl`:
