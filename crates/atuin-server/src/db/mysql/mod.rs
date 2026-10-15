@@ -1,9 +1,11 @@
+use std::str::FromStr;
+
 use async_trait::async_trait;
 use atuin_common::db;
 use atuin_common::db::MysqlDbUrl;
 use easy_cast::Conv;
 use secrecy::{ExposeSecret, SecretString};
-use sqlx::mysql::MySqlPoolOptions;
+use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 use tracing::instrument;
 
 use super::models::NewUser;
@@ -24,8 +26,13 @@ impl Database for MySql {
         &self.pool
     }
 
-    async fn connect(url: MysqlDbUrl) -> DbResult<Self> {
-        let pool = MySqlPoolOptions::new().max_connections(100).connect(url.as_str()).await?;
+    async fn connect(url: MysqlDbUrl, password: Option<SecretString>) -> DbResult<Self> {
+        let options = MySqlConnectOptions::from_str(url.as_str())?;
+        let options = match password {
+            Some(password) => options.password(password.expose_secret()),
+            None => options,
+        };
+        let pool = MySqlPoolOptions::new().max_connections(100).connect_with(options).await?;
 
         db::migrate!(&pool, "src/db/mysql/migrations")
             .await

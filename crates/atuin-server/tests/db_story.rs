@@ -30,6 +30,7 @@ fn get_settings(env_uri: Option<String>) -> eyre::Result<DbSettings> {
 
     Ok(DbSettings {
         db_uri: db_uri.parse()?,
+        db_password_file: None,
     })
 }
 
@@ -89,7 +90,7 @@ async fn test_full_db_story() -> eyre::Result<()> {
     let test_db = TestDb::new().await?;
     let settings = &test_db.settings;
 
-    let db = atuin_server::connect(settings.db_uri.clone()).await?;
+    let db = atuin_server::connect(settings).await?;
     run_the_test(&*db).await
 }
 
@@ -200,7 +201,7 @@ async fn test_add_user_with_session_is_atomic() -> eyre::Result<()> {
     let test_db = TestDb::new().await?;
     let settings = &test_db.settings;
 
-    let db = atuin_server::connect(settings.db_uri.clone()).await?;
+    let db = atuin_server::connect(settings).await?;
 
     let new_user = NewUser {
         username: "combined".to_owned(),

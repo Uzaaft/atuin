@@ -58,8 +58,11 @@ pub mod models;
 mod postgres;
 pub use postgres::Postgres;
 mod sqlite;
+use std::io;
+use std::path::PathBuf;
+
 use async_trait::async_trait;
-use atuin_common::db::OwnedDbUrl;
+use atuin_common::db::{DbUrl, MysqlDbUrl, OwnedDbUrl, PostgresDbUrl};
 use atuin_domain::record::{EncryptedData, Record, RecordIdx, RecordSeriesKey, RecordStatus};
 use easy_cast::Conv;
 use secrecy::{ExposeSecret, SecretString};
@@ -80,7 +83,7 @@ use crate::db::models::{DbRecord, RecordSeriesPoint};
 pub enum DbError {
     #[from(skip)]
     NotFound,
-    #[from(time::error::ComponentRange, time::error::Error)]
+    #[from(time::error::ComponentRange, time::error::Error, DbPasswordError)]
     Other(eyre::Report),
 }
 
@@ -98,6 +101,44 @@ pub type DbResult<T> = Result<T, DbError>;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DbSettings {
     pub db_uri: OwnedDbUrl,
+
+    /// A file holding the password for `db_uri`, such as a Docker or Kubernetes secret.
+    ///
+    /// Trailing newlines are stripped, and the rest is used as-is, never URL-decoded.
+    pub db_password_file: Option<PathBuf>,
+}
+
+impl DbSettings {
+    /// Read the password from `db_password_file`, if one is set.
+    ///
+    /// # Errors
+    /// [`DbPasswordError::AlsoInUri`] if `db_uri` holds a password too, since one would silently
+    /// win over the other.
+    pub fn password(&self) -> Result<Option<SecretString>, DbPasswordError> {
+        let Some(path) = &self.db_password_file else {
+            return Ok(None);
+        };
+
+        let uri_password = match &self.db_uri {
+            DbUrl::Postgres(PostgresDbUrl(url)) | DbUrl::Mysql(MysqlDbUrl(url)) => url.password(),
+            DbUrl::Sqlite(_) => None,
+        };
+        if uri_password.is_some() {
+            return Err(DbPasswordError::AlsoInUri);
+        }
+
+        let contents = fs_err::read_to_string(path).map_err(DbPasswordError::Read)?;
+        Ok(Some(contents.trim_end_matches(['\r', '\n']).into()))
+    }
+}
+
+/// Errors returned by [`DbSettings::password`].
+#[derive(Debug, thiserror::Error)]
+pub enum DbPasswordError {
+    #[error("failed to read db_password_file")]
+    Read(#[source] io::Error),
+    #[error("db_uri already holds a password; remove it from db_uri or unset db_password_file")]
+    AlsoInUri,
 }
 
 /// The SQL a backend runs, written in its placeholder dialect.
@@ -240,7 +281,10 @@ where
     /// The connection pool queries run against.
     fn pool(&self) -> &sqlx::Pool<Self::Db>;
 
-    async fn connect(url: Self::Url) -> DbResult<Self>;
+    /// Connect to `url`, authenticating with `password` when one is given.
+    ///
+    /// A backend without authentication rejects a password rather than ignoring it.
+    async fn connect(url: Self::Url, password: Option<SecretString>) -> DbResult<Self>;
 
     #[instrument(skip_all)]
     async fn get_session(&self, token: &SecretString) -> DbResult<Session> {
@@ -482,5 +526,61 @@ where
 
     async fn status(&self, user: &User) -> DbResult<RecordStatus> {
         Database::status(self, user).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+    use secrecy::ExposeSecret;
+    use tempfile::NamedTempFile;
+
+    use super::{DbPasswordError, DbSettings};
+
+    /// A password file holding `contents`, removed on drop.
+    fn password_file(contents: &str) -> NamedTempFile {
+        let file = NamedTempFile::new().unwrap();
+        fs_err::write(file.path(), contents).unwrap();
+        file
+    }
+
+    fn settings(db_uri: &str, password_file: &NamedTempFile) -> DbSettings {
+        DbSettings {
+            db_uri: db_uri.parse().unwrap(),
+            db_password_file: Some(password_file.path().to_owned()),
+        }
+    }
+
+    #[rstest]
+    #[case::bare("hunter2", "hunter2")]
+    #[case::trailing_newline("hunter2\n", "hunter2")]
+    #[case::trailing_crlf("hunter2\r\n", "hunter2")]
+    #[case::spaces_kept(" hunter 2 \n", " hunter 2 ")]
+    #[case::percent_escape_not_decoded("hunter%32\n", "hunter%32")]
+    fn password_is_the_file_without_trailing_newlines(
+        #[case] contents: &str,
+        #[case] expected: &str,
+    ) {
+        let file = password_file(contents);
+        let password = settings("postgres://atuin@db/atuin", &file).password().unwrap().unwrap();
+        assert_eq!(password.expose_secret(), expected);
+    }
+
+    #[rstest]
+    #[case::postgres("postgres://atuin:hunter2@db/atuin")]
+    #[case::mysql("mysql://atuin:hunter2@db/atuin")]
+    fn password_in_both_db_uri_and_file_is_rejected(#[case] db_uri: &str) {
+        let file = password_file("hunter2");
+        assert!(matches!(settings(db_uri, &file).password(), Err(DbPasswordError::AlsoInUri)));
+    }
+
+    #[rstest]
+    fn missing_password_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = DbSettings {
+            db_uri: "postgres://atuin@db/atuin".parse().unwrap(),
+            db_password_file: Some(dir.path().join("missing")),
+        };
+        assert!(matches!(settings.password(), Err(DbPasswordError::Read(_))));
     }
 }

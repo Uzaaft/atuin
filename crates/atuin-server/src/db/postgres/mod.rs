@@ -1,7 +1,10 @@
+use std::str::FromStr;
+
 use async_trait::async_trait;
 use atuin_common::db;
 use atuin_common::db::PostgresDbUrl;
-use sqlx::postgres::PgPoolOptions;
+use secrecy::{ExposeSecret, SecretString};
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
 use super::{Database, DbError, DbResult, OrdinalBindingDialect};
 
@@ -22,8 +25,13 @@ impl Database for Postgres {
         &self.pool
     }
 
-    async fn connect(url: PostgresDbUrl) -> DbResult<Self> {
-        let pool = PgPoolOptions::new().max_connections(100).connect(url.as_str()).await?;
+    async fn connect(url: PostgresDbUrl, password: Option<SecretString>) -> DbResult<Self> {
+        let options = PgConnectOptions::from_str(url.as_str())?;
+        let options = match password {
+            Some(password) => options.password(password.expose_secret()),
+            None => options,
+        };
+        let pool = PgPoolOptions::new().max_connections(100).connect_with(options).await?;
 
         // Call server_version_num to get the DB server's major version number
         // The call returns None for servers older than 8.x.

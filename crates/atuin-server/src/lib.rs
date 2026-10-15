@@ -4,11 +4,11 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use atuin_common::db::{DbUrl, OwnedDbUrl};
+use atuin_common::db::DbUrl;
 use axum::{Router, serve};
 use eyre::{Context, Result};
 
-use crate::db::{Database, DbResult, DynDatabase, MySql, Postgres, Sqlite};
+use crate::db::{Database, DbResult, DbSettings, DynDatabase, MySql, Postgres, Sqlite};
 
 mod handlers;
 mod metrics;
@@ -67,16 +67,18 @@ pub async fn launch_with_tcp_listener(
     Ok(())
 }
 
-pub async fn connect(db_uri: OwnedDbUrl) -> DbResult<Arc<dyn DynDatabase>> {
-    Ok(match db_uri {
-        DbUrl::Sqlite(url) => Arc::new(Sqlite::connect(url).await?),
-        DbUrl::Postgres(url) => Arc::new(Postgres::connect(url).await?),
-        DbUrl::Mysql(url) => Arc::new(MySql::connect(url).await?),
+pub async fn connect(settings: &DbSettings) -> DbResult<Arc<dyn DynDatabase>> {
+    let password = settings.password()?;
+
+    Ok(match settings.db_uri.clone() {
+        DbUrl::Sqlite(url) => Arc::new(Sqlite::connect(url, password).await?),
+        DbUrl::Postgres(url) => Arc::new(Postgres::connect(url, password).await?),
+        DbUrl::Mysql(url) => Arc::new(MySql::connect(url, password).await?),
     })
 }
 
 async fn connect_and_build_router(settings: Settings) -> Result<Router> {
-    let database = connect(settings.db_settings.db_uri.clone())
+    let database = connect(&settings.db_settings)
         .await
         .wrap_err_with(|| format!("failed to connect to db: {:?}", settings.db_settings))?;
 
