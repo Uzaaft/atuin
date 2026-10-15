@@ -252,13 +252,13 @@ impl XdgDir {
     }
 }
 
-/// An existing legacy `config.toml`: in [`legacy_config_dir`], or in `~/.config/atuin` even when
+/// Existing legacy `config.toml` files: in [`legacy_config_dir`], or in `~/.config/atuin` even when
 /// `XDG_CONFIG_HOME` points elsewhere, as it does for a test or a sandbox.
-fn existing_legacy_config_file() -> Option<PathBuf> {
+fn existing_legacy_config_files() -> impl Iterator<Item = PathBuf> {
     XdgDir::with_default("XDG_CONFIG_HOME")
         .filter_map(|xdg| legacy_config_dir_with(xdg).ok())
         .map(|dir| dir.joined("config.toml"))
-        .find(|path| path.exists())
+        .filter(|path| path.exists())
 }
 
 /// A legacy `config.toml` that an existing `~/.atuin/config.toml` hides: Atuin reads only the
@@ -275,7 +275,7 @@ pub fn shadowed_legacy_config() -> Option<PathBuf> {
     if !default.exists() {
         return None;
     }
-    existing_legacy_config_file().filter(|legacy| !legacy.is_same_path(default))
+    existing_legacy_config_files().find(|legacy| !legacy.is_same_path(&default))
 }
 
 /// Get the legacy config directory, used before the switch to [`atuin_home`].
@@ -313,7 +313,7 @@ pub fn unconfigured_data_dir() -> PathBuf {
         AtuinHome::Set(path) => path.joined("data"),
         AtuinHome::Default(path) => {
             let path = path.joined("data");
-            if !path.exists() && existing_legacy_data_dir().is_some() {
+            if !path.exists() && existing_legacy_data_dirs().next().is_some() {
                 return legacy_data_dir();
             }
             path
@@ -321,12 +321,12 @@ pub fn unconfigured_data_dir() -> PathBuf {
     }
 }
 
-/// An existing legacy data dir: [`legacy_data_dir`], or `~/.local/share/atuin` even when
+/// Existing legacy data dirs: [`legacy_data_dir`], or `~/.local/share/atuin` even when
 /// `XDG_DATA_HOME` points elsewhere, as it does for a test or a sandbox.
-fn existing_legacy_data_dir() -> Option<PathBuf> {
+fn existing_legacy_data_dirs() -> impl Iterator<Item = PathBuf> {
     XdgDir::with_default("XDG_DATA_HOME")
         .filter_map(|xdg| legacy_data_dir_with(xdg).ok())
-        .find(|dir| dir.exists())
+        .filter(|dir| dir.exists())
 }
 
 /// A legacy data dir that an existing `~/.atuin/data` hides: Atuin uses only the latter. Not when
@@ -344,7 +344,7 @@ pub fn shadowed_legacy_data_dir(configured_data_dir: &Path) -> Option<PathBuf> {
     if configured_data_dir != default || !default.exists() {
         return None;
     }
-    existing_legacy_data_dir().filter(|legacy| !legacy.is_same_path(default))
+    existing_legacy_data_dirs().find(|legacy| !legacy.is_same_path(&default))
 }
 
 /// Get the legacy data directory, used before the switch to [`atuin_home`].
