@@ -209,6 +209,25 @@ pub fn config_path(child: impl AsRef<Path>) -> PathBuf {
     home.unwrap_or_else(|err| panic!("{err}")).joined(child)
 }
 
+/// A legacy `config.toml` that Atuin passes over for `~/.atuin/config.toml`, or would, were that
+/// created. Only when neither `ATUIN_CONFIG_DIR` nor `ATUIN_HOME` is set: those choose a config on
+/// purpose. `~/.config/atuin` counts even when `XDG_CONFIG_HOME` points elsewhere, as it does for
+/// a test or a sandbox, so such a run can't create a `~/.atuin/config.toml` that then hides the
+/// user's config from every other run.
+#[must_use]
+pub fn shadowed_legacy_config() -> Option<PathBuf> {
+    if var_nonempty("ATUIN_CONFIG_DIR").is_some() || atuin_home_is_set() {
+        return None;
+    }
+    let active = config_path("config.toml");
+    let home_config = try_home_dir().ok().map(|home| home.joined(".config").joined("atuin"));
+    [legacy_config_dir().ok(), home_config]
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.joined("config.toml"))
+        .find(|path| *path != active && path.exists())
+}
+
 /// Get the legacy config directory, used before the switch to [`atuin_home`].
 ///
 /// This is `$XDG_CONFIG_HOME/atuin`, or `~/.config/atuin` if unset.
@@ -476,6 +495,29 @@ mod tests {
         create(&homes.legacy_data());
         let atuin_home = homes.set_atuin_home();
         assert_eq!(unconfigured_data_dir(), atuin_home.joined("data"));
+    }
+
+    #[rstest]
+    fn legacy_config_is_shadowed_once_atuin_home_has_one(homes: Homes) {
+        create(&homes.legacy_config().joined("config.toml"));
+        assert_eq!(shadowed_legacy_config(), None);
+
+        homes.migrate();
+        assert_eq!(shadowed_legacy_config(), Some(homes.legacy_config().joined("config.toml")));
+
+        homes.set_atuin_home();
+        assert_eq!(shadowed_legacy_config(), None, "ATUIN_HOME picks the config on purpose");
+    }
+
+    /// With `XDG_CONFIG_HOME` pointed away, the config in `~/.config/atuin` still counts.
+    #[rstest]
+    fn home_config_counts_when_xdg_config_home_points_elsewhere(homes: Homes) {
+        let home_config = homes.tmp.path().join("home/.config/atuin/config.toml");
+        create(&home_config);
+        assert_eq!(shadowed_legacy_config(), Some(home_config));
+
+        homes.env.set("ATUIN_CONFIG_DIR", homes.tmp.path().join("cfg"));
+        assert_eq!(shadowed_legacy_config(), None, "ATUIN_CONFIG_DIR picks the config on purpose");
     }
 
     #[rstest]

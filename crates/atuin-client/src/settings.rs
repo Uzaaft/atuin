@@ -1701,9 +1701,13 @@ impl Settings {
                 config_file.to_str().ok_or_else(|| eyre!("config file path is not valid UTF-8"))?;
             config_builder.add_source(ConfigFile::new(config_file_str, FileFormat::Toml))
         } else {
-            let mut file = File::create(config_file).wrap_err("could not create config file")?;
-            file.write_all(EXAMPLE_CONFIG.as_bytes())
-                .wrap_err("could not write default config file")?;
+            // A default `~/.atuin/config.toml` would hide the user's legacy config from then on.
+            if atuin_common::dirs::shadowed_legacy_config().is_none() {
+                let mut file =
+                    File::create(config_file).wrap_err("could not create config file")?;
+                file.write_all(EXAMPLE_CONFIG.as_bytes())
+                    .wrap_err("could not write default config file")?;
+            }
 
             config_builder
         };
