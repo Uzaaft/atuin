@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::env::{var_abspath, var_nonempty};
-use crate::path::PathBufExt as _;
+use crate::path::{PathBufExt as _, PathExt as _};
 
 /// Error returned when the user's home directory can't be determined.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -271,10 +271,11 @@ pub fn shadowed_legacy_config() -> Option<PathBuf> {
     let Ok(AtuinHome::Default(home)) = try_atuin_home() else {
         return None;
     };
-    if !home.joined("config.toml").exists() {
+    let default = home.joined("config.toml");
+    if !default.exists() {
         return None;
     }
-    existing_legacy_config_file()
+    existing_legacy_config_file().filter(|legacy| !legacy.is_same_path(default))
 }
 
 /// Get the legacy config directory, used before the switch to [`atuin_home`].
@@ -343,7 +344,7 @@ pub fn shadowed_legacy_data_dir(configured_data_dir: &Path) -> Option<PathBuf> {
     if configured_data_dir != default || !default.exists() {
         return None;
     }
-    existing_legacy_data_dir()
+    existing_legacy_data_dir().filter(|legacy| !legacy.is_same_path(default))
 }
 
 /// Get the legacy data directory, used before the switch to [`atuin_home`].
