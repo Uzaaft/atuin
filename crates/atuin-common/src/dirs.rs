@@ -209,23 +209,47 @@ pub fn config_path(child: impl AsRef<Path>) -> PathBuf {
     home.unwrap_or_else(|err| panic!("{err}")).joined(child)
 }
 
-/// A legacy `config.toml` that Atuin passes over for `~/.atuin/config.toml`, or would, were that
-/// created. Only when neither `ATUIN_CONFIG_DIR` nor `ATUIN_HOME` is set: those choose a config on
-/// purpose. `~/.config/atuin` counts even when `XDG_CONFIG_HOME` points elsewhere, as it does for
-/// a test or a sandbox, so such a run can't create a `~/.atuin/config.toml` that then hides the
-/// user's config from every other run.
-#[must_use]
-pub fn shadowed_legacy_config() -> Option<PathBuf> {
-    if var_nonempty("ATUIN_CONFIG_DIR").is_some() || atuin_home_is_set() {
-        return None;
-    }
-    let active = config_path("config.toml");
+/// The legacy `config.toml`s: in the legacy config dir, and in `~/.config/atuin` even when
+/// `XDG_CONFIG_HOME` points elsewhere, as it does for a test or a sandbox.
+fn legacy_config_files() -> impl Iterator<Item = PathBuf> {
     let home_config = try_home_dir().ok().map(|home| home.joined(".config").joined("atuin"));
     [legacy_config_dir().ok(), home_config]
         .into_iter()
         .flatten()
         .map(|dir| dir.joined("config.toml"))
-        .find(|path| *path != active && path.exists())
+}
+
+/// `~/.atuin/config.toml`, when that is where `config.toml` resolves to. Not when
+/// `ATUIN_CONFIG_DIR` or `ATUIN_HOME` picks the config on purpose.
+fn default_config() -> Option<PathBuf> {
+    if var_nonempty("ATUIN_CONFIG_DIR").is_some() {
+        return None;
+    }
+    let Ok(AtuinHome::Default(home)) = try_atuin_home() else {
+        return None;
+    };
+    let path = home.joined("config.toml");
+    (config_path("config.toml") == path).then_some(path)
+}
+
+/// A legacy `config.toml` that an existing `~/.atuin/config.toml` hides: Atuin reads only the
+/// latter.
+#[must_use]
+pub fn shadowed_legacy_config() -> Option<PathBuf> {
+    default_config().filter(|path| path.exists())?;
+    legacy_config_files().find(|path| path.exists())
+}
+
+/// Where to create `config.toml` when there is none: [`config_path`]'s answer, unless that is a
+/// default `~/.atuin/config.toml` that would hide a legacy config from then on (with
+/// `XDG_CONFIG_HOME` pointed away from it). Then it's the legacy config dir, which Atuin reads
+/// from then on, as it did before `~/.atuin`.
+#[must_use]
+pub fn new_config_path() -> PathBuf {
+    if default_config().is_some() && legacy_config_files().any(|path| path.exists()) {
+        return legacy_config_dir().unwrap_or_else(|err| panic!("{err}")).joined("config.toml");
+    }
+    config_path("config.toml")
 }
 
 /// Get the legacy config directory, used before the switch to [`atuin_home`].
@@ -509,15 +533,20 @@ mod tests {
         assert_eq!(shadowed_legacy_config(), None, "ATUIN_HOME picks the config on purpose");
     }
 
-    /// With `XDG_CONFIG_HOME` pointed away, the config in `~/.config/atuin` still counts.
+    /// With `XDG_CONFIG_HOME` pointed away from `~/.config/atuin/config.toml`, a new config goes in
+    /// `$XDG_CONFIG_HOME/atuin`, as before `~/.atuin`, rather than in a `~/.atuin` that would then
+    /// hide it.
     #[rstest]
-    fn home_config_counts_when_xdg_config_home_points_elsewhere(homes: Homes) {
-        let home_config = homes.tmp.path().join("home/.config/atuin/config.toml");
-        create(&home_config);
-        assert_eq!(shadowed_legacy_config(), Some(home_config));
+    fn new_config_avoids_hiding_the_home_config(homes: Homes) {
+        assert_eq!(new_config_path(), homes.new_home().joined("config.toml"), "a fresh install");
 
-        homes.env.set("ATUIN_CONFIG_DIR", homes.tmp.path().join("cfg"));
-        assert_eq!(shadowed_legacy_config(), None, "ATUIN_CONFIG_DIR picks the config on purpose");
+        create(&homes.tmp.path().join("home/.config/atuin/config.toml"));
+        assert_eq!(new_config_path(), homes.legacy_config().joined("config.toml"));
+        assert_eq!(shadowed_legacy_config(), None, "nothing hides it yet");
+
+        let cfg = homes.tmp.path().join("cfg");
+        homes.env.set("ATUIN_CONFIG_DIR", &cfg);
+        assert_eq!(new_config_path(), cfg.joined("config.toml"), "ATUIN_CONFIG_DIR picks it");
     }
 
     #[rstest]
